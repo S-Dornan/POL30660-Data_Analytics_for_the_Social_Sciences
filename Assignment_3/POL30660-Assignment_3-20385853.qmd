@@ -1,0 +1,452 @@
+---
+title: "POL30660-Assignment_3-20385853"
+format: pdf
+editor: visual
+---
+
+# Install packages
+
+```{r}
+#install packages if not exists
+
+#install.packages("blorr")
+install_if_not_exists <- function(package_name) {
+  if (!package_name %in% installed.packages()) {
+    install.packages(package_name)
+  }
+}
+```
+
+```{r}
+install_if_not_exists("rio")
+install_if_not_exists("tidyverse")
+install_if_not_exists("quanteda")
+install_if_not_exists("topicmodels")
+install_if_not_exists("topicdoc")
+install_if_not_exists("LDAvis")
+install_if_not_exists("stm")
+install_if_not_exists("keyATM")
+install_if_not_exists("tibble")
+```
+
+# Import packages
+
+```{r}
+library(rio)
+library(tidyverse)
+# new:
+# library(readtext)
+library(quanteda)
+library(quanteda.textplots)
+library(quanteda.textstats)
+library(quanteda.textmodels)
+library(topicmodels)
+library(topicdoc)
+library(LDAvis)
+library(stm)
+library(keyATM)
+library(tibble)
+```
+
+# Get the data
+
+```{r}
+data_path <- "H:/My Drive/College/POL30660/Assignments/Assignment_3/Submit_This/Data/"
+# NOTE: the following was changed to a new version of the data on 17 Apr 2024
+# There were errors in the election year variables in the old version due to an easy-to-overlook bug in the code preparing the data
+load(paste0(data_path, "corpusIRE_v2024.RData"))
+class(cire)
+summary(cire)
+```
+
+# NB
+
+*For whatever reason, the outputs changed depending on the day the programme was run. The outputs produced in the report were accurate as at the 10th of May 2024.*
+
+## Run 1 - 2016 & 2020
+
+### Sort/filter the data to 2016 & 2020
+
+```{r}
+filtered_data <- corpus_subset(cire, year >= 2016)  ## NB This may need to be tweaked so the year is JUST 2016, and then again so the year is JUST 2020.
+summary(filtered_data)
+```
+
+### Tokenize data
+
+```{r}
+filtered_data_tokenized <- tokens(filtered_data, 
+                 remove_punct=TRUE,
+                 split_hyphens=TRUE,
+                 remove_numbers=TRUE)
+filtered_data_tokenized
+```
+
+### Preprocess data
+
+We keep all words including the less common ones in case a notable topic comes up which isn't that common, such as Brexit in 2016.
+
+```{r}
+stopwords_two_languages <- c(stopwords("en", source = "stopwords-iso"), stopwords("ga", source = "stopwords-iso"))
+filtered_data_preprocessed <- filtered_data_tokenized |>
+          tokens_tolower() |> # put all text in lower case
+          tokens_remove(stopwords_two_languages) |> # remove (English, by default) stopwords
+          tokens_keep(min_nchar = 3) # keep only words with at least three characters
+filtered_data_preprocessed
+```
+
+### Create document-feature matrix and subset to include more frequent words
+
+```{r}
+filtered_data_dfm <- dfm(filtered_data_preprocessed)
+
+filtered_data_dfm_subset <- filtered_data_dfm |>
+                 dfm_trim(max_docfreq = 0.5, docfreq_type = "prop",
+                          min_termfreq = 0.4, termfreq_type = "quantile")
+dim(filtered_data_dfm_subset)
+
+```
+
+### Group documents by party
+
+```{r}
+grouped_data <- dfm_group(filtered_data_dfm, ## NB This includes both 2016 and 2020.
+                       groups = partyname)
+grouped_data
+```
+
+### Run the topic model
+
+```{r}
+number_of_topics <- 10
+lda_model1 <- LDA(grouped_data,
+          k = number_of_topics)
+slotNames(lda_model1)
+dim(lda_model1@beta) # topic X word/feature
+dim(lda_model1@gamma) # document X topic
+```
+
+### Inspect terms
+
+```{r}
+words_per_topic <- 10
+lda_model1_output <- terms(lda_model1, words_per_topic) # So if we change K above we'll get more or less columns down below, and if we change words_per_topic above we'll get more rows.
+lda_model1_output_df <- data.frame(lda_model1_output)
+lda_model1_output_df
+```
+
+### Coherence cross-validation on unsupervised model
+
+```{r}
+coherence <- topic_coherence(lda_model1,
+                                 dtm_data = grouped_data,
+                                 top_n_tokens = words_per_topic) 
+coherence_df_transposed <- data.frame(coherence)
+coherence_df <- as.data.frame(t(coherence_df_transposed))
+coherence_df
+mean(coherence)
+if (nrow(lda_model1_output_df) <= words_per_topic){
+  lda_model1_output_df <- rbind(lda_model1_output_df, coherence)
+  }else{
+  lda_model1_output_df <- lda_model1_output_df
+  }
+lda_model1_output_df
+#write.csv(lda_model1_output_df, "Data/lda_model1_output.csv", row.names = TRUE) #Optional: write output to CSV to enable the data to be more easily processed in tools such as Microsoft Excel or Microsoft Word
+```
+
+### Run semi-supervised model
+
+```{r}
+## NB Have a look through the Semi-supervised topic model.
+filtered_data_atm <- filtered_data_dfm_subset |>
+        keyATM_read()
+
+mykeys <- list(
+              health = c("surgery","doctor", "doctors", "sláintecare", "ill", "ambulance", "health", "care", "policy", "wheelchair"),
+              public_care = c("housing", "house", "workers", "people", "establish", "scheme", "support", "build", "develop", "social", "policy", "school", "public", "government", "community", "local", "development", "career", "services", "communities", "national", "service", "provide", "future", "development", "rural", "qualify", "overcrowding", "veterans"),
+              training_and_development = c("career", "entrepreneurship", "smes", "ida", "rural", "development", "productivity", "sme", "recruiting", "midlands", "leos", "tech"),
+              brexit_proxies = c("exit", "irish", "unity", "europe", "union", "ireland", "brexit", "government", "eurozone"), 
+              irish_words = c("agus", "bhfuil", "don", "cuirfimid", "nfos", "bliana", "amach", "san", "thabairt", "chun", "leis", "sin", "chur", "bhí", "tá", "ata", "ann", "ghaeilge", "gaeilge", "isteach", "níos", "rialtas", "bord", "teanga", "mar", "fáil")
+)
+
+atm <- keyATM(docs = filtered_data_atm,
+               model = "base",
+               no_keyword_topics = 10,
+               keywords = mykeys)
+
+atm_output <- top_words(atm)
+atm_output
+#write.csv(atm_output, "Data/atm_output.csv", row.names = TRUE) #Optional: write output to CSV to enable the data to be more easily processed in tools such as Microsoft Excel or Microsoft Word
+```
+
+## Run 2 - 2016 only
+
+### Sort/filter the data to 2016
+
+```{r}
+filtered_data_2016 <- corpus_subset(cire, year == 2016)  
+summary(filtered_data_2016)
+```
+
+### Tokenize data
+
+```{r}
+filtered_data_2016_tokenized <- tokens(filtered_data_2016, 
+                 remove_punct=TRUE,
+                 split_hyphens=TRUE,
+                 remove_numbers=TRUE)
+filtered_data_2016_tokenized
+```
+
+### Preprocess data
+
+We keep all words including the less common ones in case a notable topic comes up which isn't that common, such as Brexit in 2016.
+
+```{r}
+stopwords_two_languages <- c(stopwords("en", source = "stopwords-iso"), stopwords("ga", source = "stopwords-iso"))
+filtered_data_2016_preprocessed <- filtered_data_2016_tokenized |>
+          tokens_tolower() |> # put all text in lower case
+          tokens_remove(stopwords_two_languages) |> # remove (English, by default) stopwords
+          tokens_keep(min_nchar = 3) # keep only words with at least three characters
+filtered_data_2016_preprocessed
+```
+
+### Create document-feature matrix and subset to include more frequent words
+
+```{r}
+filtered_data_2016_dfm <- dfm(filtered_data_2016_preprocessed)
+
+filtered_data_2016_dfm_subset <- filtered_data_2016_dfm |>
+                 dfm_trim(max_docfreq = 0.5, docfreq_type = "prop",
+                          min_termfreq = 0.4, termfreq_type = "quantile")
+dim(filtered_data_2016_dfm_subset)
+
+```
+
+### Group documents by party
+
+```{r}
+grouped_data_2016 <- dfm_group(filtered_data_2016_dfm, ## NB This includes both 2016 and 2020.
+                       groups = partyname)
+grouped_data_2016
+```
+
+### Run the topic model
+
+```{r}
+number_of_topics <- 10
+lda_model2 <- LDA(grouped_data_2016,
+          k = number_of_topics)
+slotNames(lda_model2)
+dim(lda_model2@beta) # topic X word/feature
+dim(lda_model2@gamma) # document X topic
+```
+
+### Inspect terms
+
+```{r}
+words_per_topic <- 10
+lda_model2_output <- terms(lda_model2, words_per_topic) # So if we change K above we'll get more or less columns down below, and if we change words_per_topic above we'll get more rows.
+lda_model2_output_df <- data.frame(lda_model2_output)
+lda_model2_output_df 
+```
+
+### Coherence cross-validation on unsupervised model
+
+```{r}
+coherence <- topic_coherence(lda_model2,
+                                 dtm_data = grouped_data_2016,
+                                 top_n_tokens = words_per_topic) 
+coherence_df_transposed <- data.frame(coherence)
+coherence_df <- as.data.frame(t(coherence_df_transposed))
+coherence_df
+mean(coherence)
+if (nrow(lda_model2_output_df) <= words_per_topic){
+  lda_model2_output_df <- rbind(lda_model2_output_df, coherence)
+  }else{
+  lda_model2_output_df <- lda_model2_output_df
+  }
+lda_model2_output_df #Table 2
+#write.csv(lda_model2_output_df, "Data/lda_model2_output.csv", row.names = TRUE) #Optional: write output to CSV to enable the data to be more easily processed in tools such as Microsoft Excel or Microsoft Word
+```
+
+### Run semi-supervised model
+
+```{r}
+filtered_data_2016_atm <- filtered_data_2016_dfm_subset |>
+        keyATM_read()
+
+mykeys <- list(
+              health = c("surgery","doctor", "doctors", "sláintecare", "ill", "ambulance", "health", "care", "policy", "wheelchair"),
+              public_care = c("housing", "house", "workers", "people", "establish", "scheme", "support", "build", "develop", "social", "policy", "school", "public", "government", "community", "local", "development", "career", "services", "communities", "national", "service", "provide", "future", "development", "rural", "qualify", "overcrowding", "veterans"),
+              training_and_development = c("career", "entrepreneurship", "smes", "ida", "rural", "development", "productivity", "sme", "recruiting", "midlands", "leos", "tech"),
+              brexit_proxies = c("exit", "irish", "unity", "europe", "union", "ireland", "brexit", "government", "eurozone"), 
+              irish_words = c("agus", "bhfuil", "don", "cuirfimid", "nfos", "bliana", "amach", "san", "thabairt", "chun", "leis", "sin", "chur", "bhí", "tá", "ata", "ann", "ghaeilge", "gaeilge", "isteach", "níos", "rialtas", "bord", "teanga", "mar", "fáil")
+)
+
+# This would take something like 10 mins to run; the result is provided
+ atm_2016 <- keyATM(docs = filtered_data_atm,
+               model = "base",
+               no_keyword_topics = 10,
+               keywords = mykeys)
+
+atm_2016_output <- top_words(atm_2016)
+atm_2016_output #Table 1
+#write.csv(atm_2016_output, "Data/atm_2016_output.csv", row.names = TRUE) #Optional: write output to CSV to enable the data to be more easily processed in tools such as Microsoft Excel or Microsoft Word
+```
+
+## Run 3 - 2020 only
+
+### Sort/filter the data to 2020
+
+```{r}
+filtered_data_2020 <- corpus_subset(cire, year == 2020)  
+summary(filtered_data_2020)
+```
+
+### Tokenize data
+
+```{r}
+filtered_data_2020_tokenized <- tokens(filtered_data_2020, 
+                 remove_punct=TRUE,
+                 split_hyphens=TRUE,
+                 remove_numbers=TRUE)
+filtered_data_2020_tokenized
+```
+
+### Preprocess data
+
+We keep all words including the less common ones in case a notable topic comes up which isn't that common, such as Brexit in 2016.
+
+```{r}
+stopwords_two_languages <- c(stopwords("en", source = "stopwords-iso"), stopwords("ga", source = "stopwords-iso"))
+filtered_data_2020_preprocessed <- filtered_data_2020_tokenized |>
+          tokens_tolower() |> # put all text in lower case
+          tokens_remove(stopwords_two_languages) |> # remove (English, by default) stopwords
+          tokens_keep(min_nchar = 3) # keep only words with at least three characters
+filtered_data_2020_preprocessed
+```
+
+### Create document-feature matrix and subset to include more frequent words
+
+```{r}
+filtered_data_2020_dfm <- dfm(filtered_data_2020_preprocessed)
+
+filtered_data_2020_dfm_subset <- filtered_data_2020_dfm |>
+                 dfm_trim(max_docfreq = 0.5, docfreq_type = "prop",
+                          min_termfreq = 0.4, termfreq_type = "quantile")
+dim(filtered_data_2020_dfm_subset)
+
+```
+
+### Group documents by party
+
+```{r}
+grouped_data_2020 <- dfm_group(filtered_data_2020_dfm, ## NB This includes 2020.
+                       groups = partyname)
+grouped_data_2020
+```
+
+### Run the topic model
+
+```{r}
+number_of_topics <- 10
+lda_model3 <- LDA(grouped_data_2020,
+          k = number_of_topics)
+slotNames(lda_model3)
+dim(lda_model3@beta) # topic X word/feature
+dim(lda_model3@gamma) # document X topic
+```
+
+### Inspect terms
+
+```{r}
+words_per_topic <- 10
+lda_model3_output <- terms(lda_model3, words_per_topic) # So if we change K above we'll get more or less columns down below, and if we change words_per_topic above we'll get more rows.
+lda_model3_output_df <- data.frame(lda_model3_output)
+lda_model3_output_df
+```
+
+### Coherence cross-validation on unsupervised model
+
+```{r}
+coherence <- topic_coherence(lda_model3,
+                                 dtm_data = grouped_data_2020,
+                                 top_n_tokens = words_per_topic) 
+coherence_df_transposed <- data.frame(coherence)
+coherence_df <- as.data.frame(t(coherence_df_transposed))
+coherence_df
+mean(coherence)
+if (nrow(lda_model3_output_df) <= words_per_topic){
+  lda_model3_output_df <- rbind(lda_model3_output_df, coherence)
+  }else{
+  lda_model3_output_df <- lda_model3_output_df
+  }
+lda_model3_output_df
+#write.csv(lda_model3_output_df, "Data/lda_model3_output.csv", row.names = TRUE) #Optional: write output to CSV to enable the data to be more easily processed in tools such as Microsoft Excel or Microsoft Word
+```
+
+### Run semi-supervised model
+
+```{r}
+filtered_data_2020_atm <- filtered_data_2020_dfm_subset |>
+        keyATM_read()
+
+mykeys <- list(
+              health = c("surgery","doctor", "doctors", "sláintecare", "ill", "ambulance", "health", "care", "policy", "wheelchair"),
+              public_care = c("housing", "house", "workers", "people", "establish", "scheme", "support", "build", "develop", "social", "policy", "school", "public", "government", "community", "local", "development", "career", "services", "communities", "national", "service", "provide", "future", "development", "rural", "qualify", "overcrowding", "veterans"),
+              training_and_development = c("career", "entrepreneurship", "smes", "ida", "rural", "development", "productivity", "sme", "recruiting", "midlands", "leos", "tech"),
+              brexit_proxies = c("exit", "irish", "unity", "europe", "union", "ireland", "brexit", "government", "eurozone"), 
+              irish_words = c("agus", "bhfuil", "don", "cuirfimid", "nfos", "bliana", "amach", "san", "thabairt", "chun", "leis", "sin", "chur", "bhí", "tá", "ata", "ann", "ghaeilge", "gaeilge", "isteach", "níos", "rialtas", "bord", "teanga", "mar", "fáil")
+)
+
+# This would take something like 10 mins to run; the result is provided
+ atm_2020 <- keyATM(docs = filtered_data_2020_atm,
+               model = "base",
+               no_keyword_topics = 10,
+               keywords = mykeys)
+
+atm_2020_output <- top_words(atm_2020)
+atm_2020_output #Table 2
+#write.csv(atm_2020_output, "Data/atm_2020_output.csv", row.names = TRUE) #Optional: write output to CSV to enable the data to be more easily processed in tools such as Microsoft Excel or Microsoft Word
+```
+
+# Run all cells
+
+```{r}
+## Press "run all chunks above" to run all cells in this notebook
+```
+
+# Use of AI tools
+
++-------------------------------+---------------------------+-----------------------------------------------------------------------------------------------------------------------------------+
+| **Tool name**                 | **Purpose of use**        | **Prompt**                                                                                                                        |
++-------------------------------+---------------------------+-----------------------------------------------------------------------------------------------------------------------------------+
+| GitHub Copilot chat in VSCode | Assistance writing R code | "/fix" command run against the following: \                                                                                       |
+|                               |                           | "atm \<- keyATM(docs = filtered_data_atm,\                                                                                        |
+|                               |                           |                model = "base",\                                                                                                   |
+|                               |                           |                no_keyword_topics = 10,\                                                                                           |
+|                               |                           |                keywords = mykeys)\                                                                                                |
+|                               |                           | \                                                                                                                                 |
+|                               |                           | top_words(atm)"\                                                                                                                  |
+|                               |                           | Suggested fix/resultant output was to import the "quanteda.textmodels" library, which was added to the "import packages" section. |
++-------------------------------+---------------------------+-----------------------------------------------------------------------------------------------------------------------------------+
+| GitHub Copilot chat in VSCode | Assistance writing R code | \@workspace /fix how do I remove stopwords from 2 languages                                                                       |
++-------------------------------+---------------------------+-----------------------------------------------------------------------------------------------------------------------------------+
+| GitHub Copilot chat in VSCode | Assistance writing R code | How to write a for loop in R                                                                                                      |
++-------------------------------+---------------------------+-----------------------------------------------------------------------------------------------------------------------------------+
+| GitHub Copilot chat in VSCode | Assistance writing R code | /fix Error in topic_coherence(lda_model1, dtm_data = filtered_data_dfm_subset,  :\                                                |
+|                               |                           |   The topic model object and document-term matrix contain an unequal number of documents.                                         |
++-------------------------------+---------------------------+-----------------------------------------------------------------------------------------------------------------------------------+
+| GitHub Copilot chat in VSCode | Assistance writing R code | how to interpret coherence                                                                                                        |
++-------------------------------+---------------------------+-----------------------------------------------------------------------------------------------------------------------------------+
+| GitHub Copilot chat in VSCode | Assistance writing R code | How to append to dataframe in R?                                                                                                  |
++-------------------------------+---------------------------+-----------------------------------------------------------------------------------------------------------------------------------+
+| GitHub Copilot chat in VSCode | Assistance writing R code | how to transpose a dataframe in r                                                                                                 |
++-------------------------------+---------------------------+-----------------------------------------------------------------------------------------------------------------------------------+
+| GitHub Copilot chat in VSCode | Assistance writing R code | convert dataframe to CSV in R                                                                                                     |
++-------------------------------+---------------------------+-----------------------------------------------------------------------------------------------------------------------------------+
+| GitHub Copilot chat in VSCode | Assistance writing R code | How to get the number of rows of a dataframe in R                                                                                 |
++-------------------------------+---------------------------+-----------------------------------------------------------------------------------------------------------------------------------+
+| GitHub Copilot chat in VSCode | Assistance writing R code | /fix Error in check_keywords() all keywords are pruned                                                                            |
++-------------------------------+---------------------------+-----------------------------------------------------------------------------------------------------------------------------------+

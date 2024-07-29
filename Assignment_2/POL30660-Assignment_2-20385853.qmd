@@ -1,0 +1,278 @@
+---
+title: "POL30660-Assignment_2-20385853"
+author: "Samuel Dornan"
+format: html
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+# Install required modules
+
+```{r}
+#install packages if not exists
+
+#install.packages("blorr")
+install_if_not_exists <- function(package_name) {
+  if (!package_name %in% installed.packages()) {
+    install.packages(package_name)
+  }
+}
+
+install_if_not_exists("blorr")
+install_if_not_exists("rpart.plot")
+install_if_not_exists("tree")
+install_if_not_exists("randomForest")
+install_if_not_exists("gbm")
+install_if_not_exists("ROSE")
+install_if_not_exists("ggplot2")
+install_if_not_exists("caret")
+install_if_not_exists("broom")
+install_if_not_exists("knitr")
+```
+
+# Import required modules
+
+```{r}
+library(conflicted)
+library(rio)
+library(tidyverse)
+library(blorr)
+library(rpart)
+library(rpart.plot)
+library(tree)
+library(randomForest)
+library(gbm)
+library(ROSE)
+library(ggplot2)
+library(caret)
+library(rsample)
+library(broom)
+library(knitr)
+install_formats()
+```
+
+# Import data
+
+```{r}
+directory <- "H:/My Drive/College/POL30660/Assignments/Assignment_2/Submit_This/Data/ESS10/"
+filename <- "ESS10.csv"
+ess_data <- paste0(directory, filename)
+data_to_analyse <- rio::import(ess_data)
+data_to_analyse
+```
+
+## Restrict to relevant data
+
+-   online posting (pstplonl - Posted or shared anything about politics
+    online last 12 months), (avail)
+
+-   Internet usage (netusoft - Internet use, how often) (avail)
+
+-   How helpful respondents think people are (pplhlp - Most of the time
+    people helpful or mostly looking out for themselves AND pplfair -
+    Most people try to take advantage of you, or try to be fair AND
+    iphlppl - Important to help people and care for others well-being)
+    (avail AND avail AND avail)
+
+-   Showing off (ipshabt - Important to show abilities and be admired
+    AND ipsuces - Important to be successful and that people recognise
+    achievements) (avail AND avail)
+
+-   Loyalty to groups (iplylfr - Important to be loyal to friends and
+    devote to people close AND ipbhprp - Important to behave properly
+    (avail AND avail)
+
+-   Variable to predict: bctprd - Boycotted certain products last 12
+    months
+
+```{r}
+irish_data <- dplyr::filter(data_to_analyse, cntry == "IE", bctprd != 8)
+selected_data <- select(irish_data, cntry, pstplonl, netusoft, pplhlp, pplfair, iphlppl, ipshabt, ipsuces, iplylfr, ipbhprp, bctprd)
+selected_data <- dplyr::filter(selected_data, bctprd != 8)
+selected_data <- dplyr::filter(selected_data, bctprd != 8)
+selected_data$bctprd <- ifelse(selected_data$bctprd == 2, 0, 1) #NB recodes 2s (AKA NOs) as 0s
+summary(selected_data)
+```
+
+## Cursory analysis of variable to predict
+
+```{r}
+ggplot2::ggplot(selected_data, aes(x = factor(bctprd))) +
+  geom_bar() +
+  xlab("0 = No, 1 = Yes") +
+  ylab("Count") +
+  ggtitle("Have boycotted a product in the last 12 months") +
+  theme_minimal()
+```
+
+# Logistic regression
+
+```{r}
+logistic_regression <- glm(formula = bctprd ~ pstplonl + netusoft + pplhlp + pplfair + iphlppl + ipshabt + ipsuces + iplylfr + ipbhprp, data = selected_data, family = binomial)
+logistic_regression
+```
+
+```{r}
+summary(logistic_regression)
+# Interpretation: https://feliperego.github.io/blog/2015/10/23/Interpreting-Model-Output-In-R
+```
+
+```{r}
+summary(logistic_regression$fitted.values) 
+```
+
+### Table 1
+
+```{r}
+# Convert the model summary to a tidy data frame
+model_summary <- tidy(logistic_regression)
+
+# Create a nicely formatted table
+kable(model_summary, format = "markdown")
+```
+
+```{r}
+plot(logistic_regression)
+```
+
+## Resampled data
+
+```{r}
+resampled_data <- ROSE::ovun.sample(bctprd ~ ., data = selected_data, method = "both")$data
+summary(resampled_data)
+```
+
+```{r}
+resampled_logistic_regression <- glm(formula = bctprd ~ pstplonl + netusoft + pplhlp + pplfair + iphlppl + ipshabt + ipsuces + iplylfr + ipbhprp, data = resampled_data, family = binomial)
+#summary(resampled_logistic_regression) # Right, so now we get a moderate correlation between boycotting stuff and posting political stuff online provided we resample the data to have a more even split of Yesses and Nos re: boycotting.
+plot(resampled_logistic_regression)
+```
+
+### Table 2
+
+```{r}
+# Convert the model summary to a tidy data frame
+model_summary <- tidy(logistic_regression)
+
+# Create a nicely formatted table
+kable(model_summary, format = "markdown")
+```
+
+## Split into training and test data
+
+```{r}
+set.seed(1)
+# Create a stratified split
+split <- initial_split(resampled_data, prop = 0.7, strata = "bctprd")
+
+# Extract the training and test data
+resampled_train <- training(split)
+resampled_test <- testing(split)
+```
+
+# Random forest - Classification model
+
+```{r}
+set.seed(1)
+random_forest_classifier <- randomForest(formula = bctprd ~ ., data = resampled_train, type="classification")
+random_forest_classifier
+```
+
+## ROC curve
+
+```{r}
+plot(random_forest_classifier)
+```
+
+## Test prediction
+
+```{r}
+predictions1 <- predict(random_forest_classifier, newdata=resampled_test)
+```
+
+## Confusion matrix
+
+```{r}
+predictions1 <- as.factor(predictions1)
+actual_values <- as.factor(resampled_test$bctprd)
+levels <- sort(unique(c(predictions1, actual_values)))
+predictions1 <- factor(predictions1, levels = levels)
+actual_values <- factor(actual_values, levels = levels)
+cm <- caret::confusionMatrix(predictions1, actual_values)
+cm$overall
+```
+
+### Table 3
+
+```{r}
+# Convert the model summary to a tidy data frame
+model_summary <- tidy(cm$overall)
+
+# Create a nicely formatted table
+kable(model_summary, format = "markdown")
+```
+
+## Determining the most important variables
+
+### Figure 2
+
+```{r}
+varImpPlot(random_forest_classifier)
+```
+
+## Fine-tuning
+
+```{r}
+tuned_random_forest <- tuneRF(x=resampled_train[,-1], y=resampled_train$bctprd, ntreeTry=500, mtryStart=4, stepFactor=1.5, improve=0.01, trace=FALSE)
+```
+
+## Second run with more predictors
+
+```{r}
+set.seed(1)
+random_forest_classifier2 <- randomForest(formula = bctprd ~ ., data = resampled_train, mtry=6, type="classification")
+random_forest_classifier2
+```
+
+## ROC Curve
+
+### Figure 3
+
+```{r}
+plot(random_forest_classifier2)
+```
+
+## Test prediction 2
+
+```{r}
+predictions2 <- predict(random_forest_classifier2, newdata=resampled_test)
+```
+
+## Confusion matrix
+
+```{r}
+predictions2 <- as.factor(predictions2)
+actual_values2 <- as.factor(resampled_test$bctprd)
+levels <- sort(unique(c(predictions2, actual_values2)))
+predictions2 <- factor(predictions2, levels = levels)
+actual_values2 <- factor(actual_values2, levels = levels)
+cm2 <- caret::confusionMatrix(predictions2, actual_values2)
+cm2$overall
+```
+
+### Table 4
+
+```{r}
+# Convert the model summary to a tidy data frame
+model_summary <- tidy(cm$overall)
+
+# Create a nicely formatted table
+kable(model_summary, format = "markdown")
+```
+
+## Run all cells
+
+```{r}
+# Click the Run all Above button to run all cells in this notebook
+```
